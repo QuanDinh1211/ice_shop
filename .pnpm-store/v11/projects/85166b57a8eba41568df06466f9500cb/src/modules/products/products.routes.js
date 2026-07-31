@@ -43,10 +43,50 @@ const productSchema = z.object({
   variants: z.array(variantSchema).min(1),
 });
 
+const recipeLineSchema = z.object({
+  ingredientId: z.string().min(1),
+  quantity: z.coerce.number().positive().max(1000000000),
+  note: z.string().trim().max(300).optional().nullable(),
+});
+
+const recipeConfigSchema = z.object({
+  productRecipes: z.array(recipeLineSchema).max(100).default([]),
+  variants: z.array(z.object({
+    variantId: z.string().min(1),
+    recipes: z.array(recipeLineSchema).max(100).default([]),
+  })).min(1),
+}).superRefine((data, context) => {
+  const validateUniqueIngredients = (recipes, path) => {
+    const ids = recipes.map((recipe) => recipe.ingredientId);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path,
+        message: "Một nguyên liệu không được lặp lại trong cùng công thức",
+      });
+    }
+  };
+  validateUniqueIngredients(data.productRecipes, ["productRecipes"]);
+  const variantIds = data.variants.map((variant) => variant.variantId);
+  if (new Set(variantIds).size !== variantIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["variants"],
+      message: "Biến thể không được lặp lại",
+    });
+  }
+  data.variants.forEach((variant, index) => {
+    validateUniqueIngredients(variant.recipes, ["variants", index, "recipes"]);
+  });
+});
+
 const productInclude = {
   category: { select: { id: true, code: true, name: true } },
   variants: { orderBy: { price: "asc" } },
   images: { orderBy: { displayOrder: "asc" } },
+};
+const recipeInclude = {
+  ingredient: { select: { id: true, code: true, name: true, unit: true, averageCost: true } },
 };
 
 router.get(
@@ -85,18 +125,58 @@ router.get(
 );
 
 router.get(
+  "/recipes/meta",
+  requirePermission("products.manage"),
+  asyncHandler(async (request, response) => {
+    const ingredients = await prisma.ingredient.findMany({
+      where: { deletedAt: null },
+      select: { id: true, code: true, name: true, unit: true, isActive: true },
+      orderBy: { name: "asc" },
+    });
+    return success(response, { ingredients });
+  }),
+);
+
+router.get(
   "/:id",
   requirePermission("products.view", "pos.use"),
   asyncHandler(async (request, response) => {
-    const item = await prisma.product.findFirst({
-      where: { id: request.params.id, deletedAt: null },
-      include: {
-        ...productInclude,
-        recipes: { include: { ingredient: true } },
-      },
-    });
+    const [item, flavorRecipes, toppingRecipes] = await Promise.all([
+      prisma.product.findFirst({
+        where: { id: request.params.id, deletedAt: null },
+        include: {
+          ...productInclude,
+          variants: {
+            include: { recipes: { include: recipeInclude } },
+            orderBy: { price: "asc" },
+          },
+          recipes: { include: recipeInclude },
+        },
+      }),
+      prisma.flavor.findMany({
+        where: { deletedAt: null, recipes: { some: {} } },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          color: true,
+          recipes: { include: recipeInclude },
+        },
+        orderBy: { name: "asc" },
+      }),
+      prisma.topping.findMany({
+        where: { deletedAt: null, recipes: { some: {} } },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          recipes: { include: recipeInclude },
+        },
+        orderBy: { name: "asc" },
+      }),
+    ]);
     if (!item) throw new ApiError(404, "Không tìm thấy sản phẩm");
-    return success(response, item);
+    return success(response, { ...item, flavorRecipes, toppingRecipes });
   }),
 );
 
@@ -175,6 +255,106 @@ router.put(
       status: item.status,
     });
     return success(response, item, "Cập nhật sản phẩm thành công");
+  }),
+);
+
+router.put(
+  "/:id/recipes",
+  requirePermission("products.manage"),
+  validate(recipeConfigSchema),
+  asyncHandler(async (request, response) => {
+    const existing = await prisma.product.findFirst({
+      where: { id: request.params.id, deletedAt: null },
+      include: {
+        recipes: true,
+        variants: { include: { recipes: true }, orderBy: { price: "asc" } },
+      },
+    });
+    if (!existing) throw new ApiError(404, "Không tìm thấy sản phẩm");
+
+    const expectedVariantIds = existing.variants.map((variant) => variant.id);
+    const submittedVariantIds = request.body.variants.map((variant) => variant.variantId);
+    if (
+      submittedVariantIds.length !== expectedVariantIds.length
+      || submittedVariantIds.some((id) => !expectedVariantIds.includes(id))
+    ) {
+      throw new ApiError(422, "Công thức phải bao gồm đúng các biến thể của sản phẩm");
+    }
+
+    const ingredientIds = [...new Set([
+      ...request.body.productRecipes.map((recipe) => recipe.ingredientId),
+      ...request.body.variants.flatMap((variant) => variant.recipes.map((recipe) => recipe.ingredientId)),
+    ])];
+    const ingredientCount = ingredientIds.length
+      ? await prisma.ingredient.count({ where: { id: { in: ingredientIds }, deletedAt: null } })
+      : 0;
+    if (ingredientCount !== ingredientIds.length) {
+      throw new ApiError(422, "Một nguyên liệu không tồn tại hoặc đã bị xóa");
+    }
+
+    const oldData = {
+      productRecipes: existing.recipes.map(({ ingredientId, quantity, note }) => ({ ingredientId, quantity, note })),
+      variants: existing.variants.map((variant) => ({
+        variantId: variant.id,
+        recipes: variant.recipes.map(({ ingredientId, quantity, note }) => ({ ingredientId, quantity, note })),
+      })),
+    };
+    const item = await prisma.$transaction(async (tx) => {
+      await tx.productRecipe.deleteMany({
+        where: {
+          OR: [
+            { productId: existing.id },
+            { variantId: { in: expectedVariantIds } },
+          ],
+        },
+      });
+      if (request.body.productRecipes.length) {
+        await tx.productRecipe.createMany({
+          data: request.body.productRecipes.map((recipe) => ({
+            productId: existing.id,
+            ingredientId: recipe.ingredientId,
+            quantity: recipe.quantity,
+            note: recipe.note || null,
+          })),
+        });
+      }
+      for (const variant of request.body.variants) {
+        if (variant.recipes.length) {
+          await tx.productRecipe.createMany({
+            data: variant.recipes.map((recipe) => ({
+              variantId: variant.variantId,
+              ingredientId: recipe.ingredientId,
+              quantity: recipe.quantity,
+              note: recipe.note || null,
+            })),
+          });
+        }
+      }
+      await tx.auditLog.create({
+        data: {
+          userId: request.user.id,
+          action: "PRODUCT_RECIPE_UPDATE",
+          entityType: "Product",
+          entityId: existing.id,
+          oldData,
+          newData: request.body,
+          ipAddress: request.ip,
+          userAgent: request.get("user-agent"),
+        },
+      });
+      return tx.product.findUnique({
+        where: { id: existing.id },
+        include: {
+          ...productInclude,
+          variants: {
+            include: { recipes: { include: recipeInclude } },
+            orderBy: { price: "asc" },
+          },
+          recipes: { include: recipeInclude },
+        },
+      });
+    });
+    return success(response, item, "Cập nhật công thức sản phẩm thành công");
   }),
 );
 

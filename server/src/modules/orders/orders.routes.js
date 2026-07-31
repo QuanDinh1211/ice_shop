@@ -18,6 +18,7 @@ import { createBusinessCode } from "../../utils/code.js";
 import { getPagination, paginationMeta } from "../../utils/pagination.js";
 import { created, success } from "../../utils/response.js";
 import { benefitDateFor, publicMembership } from "../../services/membership.service.js";
+import { branchWhere, resolveBranchIds } from "../../services/branch-access.service.js";
 
 const router = Router();
 router.use(authenticate);
@@ -86,6 +87,10 @@ const orderInclude = {
   payments: true,
   refunds: true,
   statusHistory: {
+    include: { changedBy: { select: { id: true, fullName: true } } },
+    orderBy: { createdAt: "asc" },
+  },
+  paymentStatusHistory: {
     include: { changedBy: { select: { id: true, fullName: true } } },
     orderBy: { createdAt: "asc" },
   },
@@ -184,11 +189,16 @@ router.get(
   requirePermission("orders.view"),
   asyncHandler(async (request, response) => {
     const { page, size, skip } = getPagination(request.query);
+    const branchIds = await resolveBranchIds(
+      prisma,
+      request.user,
+      request.query.branchId || null,
+    );
     const search = String(request.query.search || "").trim();
     const dateFrom = request.query.dateFrom ? new Date(`${request.query.dateFrom}T00:00:00`) : null;
     const dateTo = request.query.dateTo ? new Date(`${request.query.dateTo}T23:59:59.999`) : null;
     const where = {
-      ...(request.query.branchId ? { branchId: request.query.branchId } : {}),
+      ...branchWhere(branchIds),
       ...(request.query.status ? { status: request.query.status } : {}),
       ...(request.query.paymentStatus ? { paymentStatus: request.query.paymentStatus } : {}),
       ...(request.query.employeeId ? { createdById: request.query.employeeId } : {}),
@@ -206,9 +216,7 @@ router.get(
           }
         : {}),
     };
-    if (!["ADMIN", "MANAGER"].includes(request.user.role.code) && request.user.branch?.id) {
-      where.branchId = request.user.branch.id;
-    }
+
     const [items, total] = await Promise.all([
       prisma.order.findMany({
         where,
@@ -233,8 +241,13 @@ router.get(
   "/drafts/mine",
   requirePermission("pos.use"),
   asyncHandler(async (request, response) => {
+    const branchIds = await resolveBranchIds(prisma, request.user);
     const items = await prisma.order.findMany({
-      where: { createdById: request.user.id, status: "DRAFT" },
+      where: {
+        createdById: request.user.id,
+        status: "DRAFT",
+        ...branchWhere(branchIds),
+      },
       include: orderInclude,
       orderBy: { updatedAt: "desc" },
     });
@@ -246,7 +259,11 @@ router.get(
   "/:id",
   requirePermission("orders.view", "pos.use"),
   asyncHandler(async (request, response) => {
-    const item = await prisma.order.findUnique({ where: { id: request.params.id }, include: orderInclude });
+    const branchIds = await resolveBranchIds(prisma, request.user);
+    const item = await prisma.order.findFirst({
+      where: { id: request.params.id, ...branchWhere(branchIds) },
+      include: orderInclude,
+    });
     if (!item) throw new ApiError(404, "Không tìm thấy đơn hàng");
     return success(response, item);
   }),
@@ -350,6 +367,16 @@ router.post(
           statusHistory: {
             create: { status, changedById: request.user.id, note: status === "DRAFT" ? "Lưu đơn tạm" : "Thanh toán tại POS" },
           },
+          paymentStatusHistory: {
+            create: {
+              fromStatus: null,
+              status: status === "DRAFT" ? "UNPAID" : "PAID",
+              changedById: request.user.id,
+              amount: status === "DRAFT" ? null : currentPricing.totalAmount,
+              method: status === "DRAFT" ? null : request.body.payments.length > 1 ? "MIXED" : request.body.payments[0]?.method || null,
+              note: status === "DRAFT" ? "Khởi tạo đơn chưa thanh toán" : "Thanh toán đầy đủ tại POS",
+            },
+          },
           ...(!request.body.saveAsDraft
             ? {
                 payments: {
@@ -444,7 +471,11 @@ router.patch(
     note: z.string().trim().max(500).optional().nullable(),
   })),
   asyncHandler(async (request, response) => {
-    const existing = await prisma.order.findUnique({ where: { id: request.params.id }, include: orderInclude });
+    const branchIds = await resolveBranchIds(prisma, request.user);
+    const existing = await prisma.order.findFirst({
+      where: { id: request.params.id, ...branchWhere(branchIds) },
+      include: orderInclude,
+    });
     if (!existing) throw new ApiError(404, "Không tìm thấy đơn hàng");
     const transitions = {
       DRAFT: ["PENDING", "CANCELLED"],
@@ -510,8 +541,9 @@ router.post(
     reason: z.string().trim().min(3).max(500),
   })),
   asyncHandler(async (request, response) => {
-    const existing = await prisma.order.findUnique({
-      where: { id: request.params.id },
+    const branchIds = await resolveBranchIds(prisma, request.user);
+    const existing = await prisma.order.findFirst({
+      where: { id: request.params.id, ...branchWhere(branchIds) },
       include: { refunds: { where: { status: "COMPLETED" } } },
     });
     if (!existing || existing.paymentStatus === "UNPAID") throw new ApiError(404, "Không tìm thấy đơn đã thanh toán");
@@ -533,9 +565,21 @@ router.post(
         },
       });
       const totalRefunded = refunded + request.body.amount;
+      const nextPaymentStatus = totalRefunded >= existing.totalAmount ? "REFUNDED" : "PARTIALLY_REFUNDED";
       await tx.order.update({
         where: { id: existing.id },
-        data: { paymentStatus: totalRefunded >= existing.totalAmount ? "REFUNDED" : "PARTIALLY_REFUNDED" },
+        data: { paymentStatus: nextPaymentStatus },
+      });
+      await tx.paymentStatusHistory.create({
+        data: {
+          orderId: existing.id,
+          fromStatus: existing.paymentStatus,
+          status: nextPaymentStatus,
+          changedById: request.user.id,
+          amount: request.body.amount,
+          method: request.body.method,
+          note: `Hoàn tiền: ${request.body.reason}`,
+        },
       });
       if (existing.shiftId) {
         await tx.workShift.update({
@@ -554,7 +598,11 @@ router.get(
   "/:id/invoice.pdf",
   requirePermission("orders.view", "pos.use"),
   asyncHandler(async (request, response) => {
-    const order = await prisma.order.findUnique({ where: { id: request.params.id }, include: orderInclude });
+    const branchIds = await resolveBranchIds(prisma, request.user);
+    const order = await prisma.order.findFirst({
+      where: { id: request.params.id, ...branchWhere(branchIds) },
+      include: orderInclude,
+    });
     if (!order) throw new ApiError(404, "Không tìm thấy đơn hàng");
     response.setHeader("Content-Type", "application/pdf");
     response.setHeader("Content-Disposition", `inline; filename="${order.code}.pdf"`);

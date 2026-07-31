@@ -94,20 +94,17 @@ test("warehouse staff can issue stock and complete a stocktake only at their bra
   const authorization = `Bearer ${login.body.data.accessToken}`;
   const ownBranchId = login.body.data.user.branch.id;
 
-  const [inventoryResponse, branchesResponse] = await Promise.all([
-    request(app)
-      .get(`/api/inventory?branchId=${ownBranchId}&size=100`)
-      .set("Authorization", authorization)
-      .expect(200),
-    request(app)
-      .get("/api/branches")
-      .set("Authorization", authorization)
-      .expect(200),
-  ]);
+  const inventoryResponse = await request(app)
+    .get(`/api/inventory?branchId=${ownBranchId}&size=100`)
+    .set("Authorization", authorization)
+    .expect(200);
   const inventoryLine = inventoryResponse.body.data.find((item) => item.quantity >= 2);
   assert.ok(inventoryLine);
 
-  const otherBranch = branchesResponse.body.data.find((branch) => branch.id !== ownBranchId);
+  const otherBranch = await prisma.branch.findFirst({
+    where: { id: { not: ownBranchId }, deletedAt: null },
+    select: { id: true },
+  });
   assert.ok(otherBranch);
   await request(app)
     .post("/api/inventory/issues")
@@ -996,4 +993,460 @@ test("manager employee and financial access is limited to managed branches", asy
     .get(`/api/reports/dashboard?branchId=${otherBranch.id}`)
     .set("Authorization", managerAuthorization)
     .expect(403);
+});
+
+test("unpaid prepared order can be paid from order detail and then completed", async () => {
+  const login = await request(app)
+    .post("/api/auth/login")
+    .send({ login: "cashier", password: "IceCream@123" })
+    .expect(200);
+  const authorization = `Bearer ${login.body.data.accessToken}`;
+  const [products, flavors] = await Promise.all([
+    request(app).get("/api/products?status=ACTIVE&size=10").set("Authorization", authorization).expect(200),
+    request(app).get("/api/flavors?status=AVAILABLE&size=100").set("Authorization", authorization).expect(200),
+  ]);
+  const product = products.body.data.find((item) => item.variants.some((variant) => variant.isActive));
+  const variant = product.variants.find((item) => item.isActive);
+  const flavorIds = Array.from({ length: variant.scoopCount }, () => flavors.body.data[0].id);
+  const draft = await request(app)
+    .post("/api/orders")
+    .set("Authorization", authorization)
+    .send({
+      items: [{ variantId: variant.id, quantity: 1, flavorIds, toppingIds: [] }],
+      saveAsDraft: true,
+      customerPaid: 0,
+      payments: [],
+      deliveryFee: 0,
+    })
+    .expect(201);
+  const orderId = draft.body.data.id;
+
+  for (const status of ["PENDING", "MAKING", "READY"]) {
+    await request(app)
+      .patch(`/api/orders/${orderId}/status`)
+      .set("Authorization", authorization)
+      .send({ status })
+      .expect(200);
+  }
+  await request(app)
+    .patch(`/api/orders/${orderId}/status`)
+    .set("Authorization", authorization)
+    .send({ status: "COMPLETED" })
+    .expect(422);
+
+  await request(app)
+    .post(`/api/payments/order/${orderId}`)
+    .set("Authorization", authorization)
+    .send({ method: "CASH", amount: draft.body.data.totalAmount })
+    .expect(201);
+  const paidOrder = await request(app)
+    .get(`/api/orders/${orderId}`)
+    .set("Authorization", authorization)
+    .expect(200);
+  assert.equal(paidOrder.body.data.paymentStatus, "PAID");
+  assert.ok(paidOrder.body.data.paymentStatusHistory.some((item) => item.status === "UNPAID"));
+  assert.ok(paidOrder.body.data.paymentStatusHistory.some((item) => item.status === "PAID"));
+
+  const completed = await request(app)
+    .patch(`/api/orders/${orderId}/status`)
+    .set("Authorization", authorization)
+    .send({ status: "COMPLETED" })
+    .expect(200);
+  assert.equal(completed.body.data.status, "COMPLETED");
+});
+
+test("product detail exposes fixed and selectable ingredient recipes", async () => {
+  const login = await request(app)
+    .post("/api/auth/login")
+    .send({ login: "cashier", password: "IceCream@123" })
+    .expect(200);
+  const authorization = `Bearer ${login.body.data.accessToken}`;
+  const products = await request(app)
+    .get("/api/products?status=ACTIVE&size=10")
+    .set("Authorization", authorization)
+    .expect(200);
+  const product = products.body.data.find((item) => item.variants.length > 0);
+  const detail = await request(app)
+    .get(`/api/products/${product.id}`)
+    .set("Authorization", authorization)
+    .expect(200);
+
+  assert.ok(Array.isArray(detail.body.data.recipes));
+  assert.ok(detail.body.data.variants.every((variant) => Array.isArray(variant.recipes)));
+  assert.ok(detail.body.data.variants.some((variant) => variant.recipes.length > 0));
+  assert.ok(detail.body.data.flavorRecipes.some((flavor) => flavor.recipes.length > 0));
+  assert.ok(detail.body.data.toppingRecipes.some((topping) => topping.recipes.length > 0));
+});
+
+test("manager can update product recipes while cashier is forbidden", async () => {
+  const [managerLogin, cashierLogin] = await Promise.all([
+    request(app).post("/api/auth/login").send({ login: "manager", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "cashier", password: "IceCream@123" }).expect(200),
+  ]);
+  const managerAuthorization = `Bearer ${managerLogin.body.data.accessToken}`;
+  const cashierAuthorization = `Bearer ${cashierLogin.body.data.accessToken}`;
+  const products = await request(app)
+    .get("/api/products?status=ACTIVE&size=10")
+    .set("Authorization", managerAuthorization)
+    .expect(200);
+  const product = products.body.data.find((item) => item.variants.length > 0);
+  const detail = await request(app)
+    .get(`/api/products/${product.id}`)
+    .set("Authorization", managerAuthorization)
+    .expect(200);
+  const originalPayload = {
+    productRecipes: detail.body.data.recipes.map(({ ingredientId, quantity, note }) => ({ ingredientId, quantity, note })),
+    variants: detail.body.data.variants.map((variant) => ({
+      variantId: variant.id,
+      recipes: variant.recipes.map(({ ingredientId, quantity, note }) => ({ ingredientId, quantity, note })),
+    })),
+  };
+  const modifiedPayload = structuredClone(originalPayload);
+  const targetVariant = modifiedPayload.variants.find((variant) => variant.recipes.length > 0);
+  assert.ok(targetVariant);
+  targetVariant.recipes[0].note = "Kiểm thử cập nhật công thức";
+
+  await request(app)
+    .get("/api/products/recipes/meta")
+    .set("Authorization", managerAuthorization)
+    .expect(200);
+  await request(app)
+    .get("/api/products/recipes/meta")
+    .set("Authorization", cashierAuthorization)
+    .expect(403);
+  await request(app)
+    .put(`/api/products/${product.id}/recipes`)
+    .set("Authorization", cashierAuthorization)
+    .send(modifiedPayload)
+    .expect(403);
+
+  try {
+    await request(app)
+      .put(`/api/products/${product.id}/recipes`)
+      .set("Authorization", managerAuthorization)
+      .send(modifiedPayload)
+      .expect(200);
+    const updated = await request(app)
+      .get(`/api/products/${product.id}`)
+      .set("Authorization", managerAuthorization)
+      .expect(200);
+    const updatedVariant = updated.body.data.variants.find((variant) => variant.id === targetVariant.variantId);
+    assert.equal(updatedVariant.recipes[0].note, "Kiểm thử cập nhật công thức");
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "PRODUCT_RECIPE_UPDATE", entityId: product.id },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.ok(audit);
+  } finally {
+    await request(app)
+      .put(`/api/products/${product.id}/recipes`)
+      .set("Authorization", managerAuthorization)
+      .send(originalPayload)
+      .expect(200);
+  }
+});
+
+test("branch data scope protects inventory, purchase orders and orders", async () => {
+  const [adminLogin, managerLogin, warehouseLogin, cashierLogin] = await Promise.all([
+    request(app).post("/api/auth/login").send({ login: "admin", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "manager", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "warehouse", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "cashier", password: "IceCream@123" }).expect(200),
+  ]);
+  const adminAuthorization = `Bearer ${adminLogin.body.data.accessToken}`;
+  const managerAuthorization = `Bearer ${managerLogin.body.data.accessToken}`;
+  const warehouseAuthorization = `Bearer ${warehouseLogin.body.data.accessToken}`;
+  const cashierAuthorization = `Bearer ${cashierLogin.body.data.accessToken}`;
+  const ownBranchId = managerLogin.body.data.user.branch.id;
+
+  const [adminBranches, managerBranches, warehouseBranches] = await Promise.all([
+    request(app).get("/api/branches").set("Authorization", adminAuthorization).expect(200),
+    request(app).get("/api/branches").set("Authorization", managerAuthorization).expect(200),
+    request(app).get("/api/branches").set("Authorization", warehouseAuthorization).expect(200),
+  ]);
+  const otherBranch = adminBranches.body.data.find((branch) => branch.id !== ownBranchId);
+  assert.ok(otherBranch);
+  assert.ok(managerBranches.body.data.length >= 1);
+  assert.ok(managerBranches.body.data.every((branch) => branch.id === ownBranchId));
+  assert.deepEqual(
+    warehouseBranches.body.data.map((branch) => branch.id),
+    [warehouseLogin.body.data.user.branch.id],
+  );
+
+  const [adminInventory, managerInventory, warehouseInventory] = await Promise.all([
+    request(app).get("/api/inventory?size=100").set("Authorization", adminAuthorization).expect(200),
+    request(app).get("/api/inventory?size=100").set("Authorization", managerAuthorization).expect(200),
+    request(app).get("/api/inventory?size=100").set("Authorization", warehouseAuthorization).expect(200),
+  ]);
+  assert.ok(new Set(adminInventory.body.data.map((item) => item.branchId)).size >= 2);
+  assert.ok(managerInventory.body.data.every((item) => item.branchId === ownBranchId));
+  assert.ok(
+    warehouseInventory.body.data.every(
+      (item) => item.branchId === warehouseLogin.body.data.user.branch.id,
+    ),
+  );
+  await request(app)
+    .get(`/api/inventory?branchId=${otherBranch.id}`)
+    .set("Authorization", managerAuthorization)
+    .expect(403);
+  await request(app)
+    .get(`/api/inventory/transactions?branchId=${otherBranch.id}`)
+    .set("Authorization", warehouseAuthorization)
+    .expect(403);
+
+  const [suppliers, ingredients] = await Promise.all([
+    request(app).get("/api/suppliers?size=1").set("Authorization", adminAuthorization).expect(200),
+    request(app).get("/api/inventory/ingredients").set("Authorization", adminAuthorization).expect(200),
+  ]);
+  const purchaseInput = {
+    supplierId: suppliers.body.data[0].id,
+    branchId: otherBranch.id,
+    note: "Phiếu kiểm thử phạm vi chi nhánh",
+    items: [{
+      ingredientId: ingredients.body.data[0].id,
+      quantity: 1,
+      unitCost: ingredients.body.data[0].averageCost,
+      batchNumber: `TEST-SCOPE-${Date.now()}`,
+      manufactureDate: null,
+      expiryDate: null,
+    }],
+  };
+  let purchaseOrderId;
+  try {
+    const createdPurchaseOrder = await request(app)
+      .post("/api/purchase-orders")
+      .set("Authorization", adminAuthorization)
+      .send(purchaseInput)
+      .expect(201);
+    purchaseOrderId = createdPurchaseOrder.body.data.id;
+
+    await request(app)
+      .post("/api/purchase-orders")
+      .set("Authorization", managerAuthorization)
+      .send(purchaseInput)
+      .expect(403);
+    await request(app)
+      .get(`/api/purchase-orders?branchId=${otherBranch.id}`)
+      .set("Authorization", managerAuthorization)
+      .expect(403);
+    await request(app)
+      .get(`/api/purchase-orders/${purchaseOrderId}`)
+      .set("Authorization", managerAuthorization)
+      .expect(404);
+    await request(app)
+      .patch(`/api/purchase-orders/${purchaseOrderId}/status`)
+      .set("Authorization", warehouseAuthorization)
+      .send({ status: "PENDING" })
+      .expect(404);
+    await request(app)
+      .get(`/api/purchase-orders/${purchaseOrderId}`)
+      .set("Authorization", adminAuthorization)
+      .expect(200);
+  } finally {
+    if (purchaseOrderId) {
+      await prisma.purchaseOrder.delete({ where: { id: purchaseOrderId } });
+    }
+  }
+
+  const otherOrder = await prisma.order.findFirst({
+    where: { branchId: otherBranch.id },
+    select: { id: true },
+  });
+  assert.ok(otherOrder);
+  const [managerOrders, cashierOrders, adminOtherOrders] = await Promise.all([
+    request(app).get("/api/orders?size=100").set("Authorization", managerAuthorization).expect(200),
+    request(app).get("/api/orders?size=100").set("Authorization", cashierAuthorization).expect(200),
+    request(app).get(`/api/orders?branchId=${otherBranch.id}&size=5`).set("Authorization", adminAuthorization).expect(200),
+  ]);
+  assert.ok(managerOrders.body.data.every((order) => order.branchId === ownBranchId));
+  assert.ok(
+    cashierOrders.body.data.every(
+      (order) => order.branchId === cashierLogin.body.data.user.branch.id,
+    ),
+  );
+  assert.ok(adminOtherOrders.body.data.every((order) => order.branchId === otherBranch.id));
+
+  await request(app)
+    .get(`/api/orders?branchId=${otherBranch.id}`)
+    .set("Authorization", managerAuthorization)
+    .expect(403);
+  await request(app)
+    .get(`/api/orders?branchId=${otherBranch.id}`)
+    .set("Authorization", cashierAuthorization)
+    .expect(403);
+  for (const [path, authorization] of [
+    [`/api/orders/${otherOrder.id}`, managerAuthorization],
+    [`/api/orders/${otherOrder.id}`, cashierAuthorization],
+    [`/api/orders/${otherOrder.id}/invoice.pdf`, managerAuthorization],
+    [`/api/payments/order/${otherOrder.id}`, managerAuthorization],
+  ]) {
+    await request(app).get(path).set("Authorization", authorization).expect(404);
+  }
+  await request(app)
+    .patch(`/api/orders/${otherOrder.id}/status`)
+    .set("Authorization", managerAuthorization)
+    .send({ status: "CANCELLED", note: "Không được phép truy cập" })
+    .expect(404);
+  await request(app)
+    .post(`/api/orders/${otherOrder.id}/refunds`)
+    .set("Authorization", managerAuthorization)
+    .send({ amount: 1, method: "CASH", reason: "Không được phép truy cập" })
+    .expect(404);
+  await request(app)
+    .post(`/api/payments/order/${otherOrder.id}`)
+    .set("Authorization", managerAuthorization)
+    .send({ amount: 1, method: "CASH" })
+    .expect(404);
+  await request(app)
+    .get(`/api/orders/${otherOrder.id}`)
+    .set("Authorization", adminAuthorization)
+    .expect(200);
+});
+
+test("membership revenue report is accurate and branch scoped for every role", async () => {
+  const [adminLogin, managerLogin, cashier02Login, warehouse02Login, staffLogin] = await Promise.all([
+    request(app).post("/api/auth/login").send({ login: "admin", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "manager", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "cashier02", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "warehouse02", password: "IceCream@123" }).expect(200),
+    request(app).post("/api/auth/login").send({ login: "staff01", password: "IceCream@123" }).expect(200),
+  ]);
+  const authorization = {
+    admin: `Bearer ${adminLogin.body.data.accessToken}`,
+    manager: `Bearer ${managerLogin.body.data.accessToken}`,
+    cashier02: `Bearer ${cashier02Login.body.data.accessToken}`,
+    warehouse02: `Bearer ${warehouse02Login.body.data.accessToken}`,
+    staff: `Bearer ${staffLogin.body.data.accessToken}`,
+  };
+  const branchOneId = managerLogin.body.data.user.branch.id;
+  const branchTwoId = cashier02Login.body.data.user.branch.id;
+  assert.notEqual(branchOneId, branchTwoId);
+
+  const [plan, customers, managerUser, cashier02User] = await Promise.all([
+    prisma.membershipPlan.findFirst({ orderBy: { createdAt: "asc" } }),
+    prisma.customer.findMany({ take: 2, orderBy: { createdAt: "asc" } }),
+    prisma.user.findUnique({ where: { username: "manager" } }),
+    prisma.user.findUnique({ where: { username: "cashier02" } }),
+  ]);
+  assert.ok(plan);
+  assert.equal(customers.length, 2);
+  const suffix = Date.now().toString().slice(-8);
+  const codes = [`HV-SCOPE-A-${suffix}`, `HV-SCOPE-B-${suffix}`, `HV-SCOPE-C-${suffix}`];
+  const reportPath = "/api/reports/membership-revenue?from=2024-02-10&to=2024-02-10";
+
+  try {
+    await prisma.membershipSubscription.createMany({
+      data: [
+        {
+          code: codes[0],
+          customerId: customers[0].id,
+          membershipPlanId: plan.id,
+          branchId: branchOneId,
+          createdById: managerUser.id,
+          startsAt: new Date("2024-02-10T03:00:00.000Z"),
+          endsAt: new Date("2024-03-11T03:00:00.000Z"),
+          amountPaid: 111000,
+          paymentMethod: "CASH",
+          status: "EXPIRED",
+          createdAt: new Date("2024-02-10T03:00:00.000Z"),
+          updatedAt: new Date("2024-02-10T03:00:00.000Z"),
+        },
+        {
+          code: codes[1],
+          customerId: customers[0].id,
+          membershipPlanId: plan.id,
+          branchId: branchOneId,
+          createdById: managerUser.id,
+          startsAt: new Date("2024-03-11T03:00:00.000Z"),
+          endsAt: new Date("2024-04-10T03:00:00.000Z"),
+          amountPaid: 333000,
+          paymentMethod: "CARD",
+          status: "EXPIRED",
+          createdAt: new Date("2024-02-10T04:00:00.000Z"),
+          updatedAt: new Date("2024-02-10T04:00:00.000Z"),
+        },
+        {
+          code: codes[2],
+          customerId: customers[1].id,
+          membershipPlanId: plan.id,
+          branchId: branchTwoId,
+          createdById: cashier02User.id,
+          startsAt: new Date("2024-02-10T05:00:00.000Z"),
+          endsAt: new Date("2024-03-11T05:00:00.000Z"),
+          amountPaid: 222000,
+          paymentMethod: "BANK_TRANSFER",
+          status: "EXPIRED",
+          createdAt: new Date("2024-02-10T05:00:00.000Z"),
+          updatedAt: new Date("2024-02-10T05:00:00.000Z"),
+        },
+      ],
+    });
+
+    const adminReport = await request(app)
+      .get(reportPath)
+      .set("Authorization", authorization.admin)
+      .expect(200);
+    assert.equal(adminReport.body.data.summary.revenue, 666000);
+    assert.equal(adminReport.body.data.summary.subscriptions, 3);
+    assert.equal(adminReport.body.data.summary.uniqueCustomers, 2);
+    assert.equal(adminReport.body.data.summary.averageRevenue, 222000);
+    assert.equal(adminReport.body.data.summary.newSubscriptions, 2);
+    assert.equal(adminReport.body.data.summary.renewals, 1);
+    assert.equal(adminReport.body.data.dailySeries.length, 1);
+    assert.equal(adminReport.body.data.dailySeries[0].date, "2024-02-10");
+    assert.equal(adminReport.body.data.planBreakdown[0].revenue, 666000);
+    assert.equal(adminReport.body.data.branchBreakdown.length, 2);
+    assert.equal(adminReport.body.data.paymentBreakdown.length, 3);
+    assert.equal(adminReport.body.data.recentSubscriptions.length, 3);
+
+    const [managerReport, cashierReport, warehouseReport, staffReport, adminBranchTwo] = await Promise.all([
+      request(app).get(reportPath).set("Authorization", authorization.manager).expect(200),
+      request(app).get(reportPath).set("Authorization", authorization.cashier02).expect(200),
+      request(app).get(reportPath).set("Authorization", authorization.warehouse02).expect(200),
+      request(app).get(reportPath).set("Authorization", authorization.staff).expect(200),
+      request(app).get(`${reportPath}&branchId=${branchTwoId}`).set("Authorization", authorization.admin).expect(200),
+    ]);
+    assert.equal(managerReport.body.data.summary.revenue, 444000);
+    assert.ok(managerReport.body.data.branchBreakdown.every((item) => item.id === branchOneId));
+    assert.equal(cashierReport.body.data.summary.revenue, 222000);
+    assert.ok(cashierReport.body.data.branchBreakdown.every((item) => item.id === branchTwoId));
+    assert.equal(warehouseReport.body.data.summary.revenue, 222000);
+    assert.equal(staffReport.body.data.summary.revenue, 444000);
+    assert.equal(adminBranchTwo.body.data.summary.revenue, 222000);
+
+    await request(app)
+      .get(`${reportPath}&branchId=${branchTwoId}`)
+      .set("Authorization", authorization.manager)
+      .expect(403);
+    await request(app)
+      .get(`${reportPath}&branchId=${branchOneId}`)
+      .set("Authorization", authorization.cashier02)
+      .expect(403);
+    await request(app)
+      .get("/api/reports/membership-revenue?from=2024-02-11&to=2024-02-10")
+      .set("Authorization", authorization.admin)
+      .expect(422);
+
+    const managerSubscriptions = await request(app)
+      .get("/api/memberships/subscriptions")
+      .set("Authorization", authorization.manager)
+      .expect(200);
+    assert.ok(managerSubscriptions.body.data.every((item) => item.branchId === branchOneId));
+    await request(app)
+      .get(`/api/memberships/subscriptions?branchId=${branchTwoId}`)
+      .set("Authorization", authorization.manager)
+      .expect(403);
+    await request(app)
+      .post("/api/memberships/subscriptions")
+      .set("Authorization", authorization.manager)
+      .send({
+        customerId: customers[0].id,
+        membershipPlanId: plan.id,
+        branchId: branchTwoId,
+        paymentMethod: "CASH",
+      })
+      .expect(403);
+  } finally {
+    await prisma.membershipSubscription.deleteMany({ where: { code: { in: codes } } });
+  }
 });
