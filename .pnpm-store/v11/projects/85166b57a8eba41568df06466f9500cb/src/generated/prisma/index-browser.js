@@ -115,6 +115,9 @@ Prisma.NullTypes = {
  */
 
 exports.Prisma.TransactionIsolationLevel = makeStrictEnum({
+  ReadUncommitted: 'ReadUncommitted',
+  ReadCommitted: 'ReadCommitted',
+  RepeatableRead: 'RepeatableRead',
   Serializable: 'Serializable'
 });
 
@@ -357,6 +360,53 @@ exports.Prisma.InventoryTransactionScalarFieldEnum = {
   updatedAt: 'updatedAt'
 };
 
+exports.Prisma.StockIssueScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  reason: 'reason',
+  note: 'note',
+  totalCost: 'totalCost',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.StockIssueItemScalarFieldEnum = {
+  id: 'id',
+  stockIssueId: 'stockIssueId',
+  ingredientId: 'ingredientId',
+  quantity: 'quantity',
+  unitCost: 'unitCost',
+  lineCost: 'lineCost',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.StocktakeScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  note: 'note',
+  totalVarianceCost: 'totalVarianceCost',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.StocktakeItemScalarFieldEnum = {
+  id: 'id',
+  stocktakeId: 'stocktakeId',
+  ingredientId: 'ingredientId',
+  systemQuantity: 'systemQuantity',
+  actualQuantity: 'actualQuantity',
+  difference: 'difference',
+  unitCost: 'unitCost',
+  varianceCost: 'varianceCost',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.SupplierScalarFieldEnum = {
   id: 'id',
   code: 'code',
@@ -407,9 +457,18 @@ exports.Prisma.MembershipLevelScalarFieldEnum = {
   code: 'code',
   name: 'name',
   minSpending: 'minSpending',
+  minPoints: 'minPoints',
   pointRate: 'pointRate',
   pointValue: 'pointValue',
   birthdayDiscount: 'birthdayDiscount',
+  voucherEnabled: 'voucherEnabled',
+  voucherType: 'voucherType',
+  voucherValue: 'voucherValue',
+  voucherMaxDiscount: 'voucherMaxDiscount',
+  voucherMinOrderValue: 'voucherMinOrderValue',
+  voucherValidityDays: 'voucherValidityDays',
+  voucherCooldownDays: 'voucherCooldownDays',
+  voucherRenewalOrderMinAmount: 'voucherRenewalOrderMinAmount',
   displayOrder: 'displayOrder',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
@@ -430,6 +489,53 @@ exports.Prisma.CustomerScalarFieldEnum = {
   deletedAt: 'deletedAt',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
+};
+
+exports.Prisma.MembershipPlanScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  description: 'description',
+  price: 'price',
+  durationDays: 'durationDays',
+  dailyFreeQuantity: 'dailyFreeQuantity',
+  benefitVariantId: 'benefitVariantId',
+  isActive: 'isActive',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.MembershipPlanProductScalarFieldEnum = {
+  membershipPlanId: 'membershipPlanId',
+  productId: 'productId'
+};
+
+exports.Prisma.MembershipSubscriptionScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  customerId: 'customerId',
+  membershipPlanId: 'membershipPlanId',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  startsAt: 'startsAt',
+  endsAt: 'endsAt',
+  amountPaid: 'amountPaid',
+  paymentMethod: 'paymentMethod',
+  referenceCode: 'referenceCode',
+  status: 'status',
+  note: 'note',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.MembershipBenefitUsageScalarFieldEnum = {
+  id: 'id',
+  subscriptionId: 'subscriptionId',
+  orderId: 'orderId',
+  benefitDate: 'benefitDate',
+  quantity: 'quantity',
+  discountAmount: 'discountAmount',
+  createdAt: 'createdAt'
 };
 
 exports.Prisma.CustomerPointTransactionScalarFieldEnum = {
@@ -486,6 +592,27 @@ exports.Prisma.PromotionUsageScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
+exports.Prisma.CustomerVoucherScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  customerId: 'customerId',
+  membershipLevelId: 'membershipLevelId',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  issuedFromOrderId: 'issuedFromOrderId',
+  usedOrderId: 'usedOrderId',
+  type: 'type',
+  value: 'value',
+  maxDiscount: 'maxDiscount',
+  minOrderValue: 'minOrderValue',
+  issueReason: 'issueReason',
+  status: 'status',
+  expiresAt: 'expiresAt',
+  usedAt: 'usedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.OrderScalarFieldEnum = {
   id: 'id',
   code: 'code',
@@ -497,7 +624,9 @@ exports.Prisma.OrderScalarFieldEnum = {
   promotionId: 'promotionId',
   originalAmount: 'originalAmount',
   discountAmount: 'discountAmount',
+  voucherDiscount: 'voucherDiscount',
   pointsDiscount: 'pointsDiscount',
+  membershipDiscount: 'membershipDiscount',
   vatRate: 'vatRate',
   taxAmount: 'taxAmount',
   deliveryFee: 'deliveryFee',
@@ -648,6 +777,380 @@ exports.Prisma.NullsOrder = {
   last: 'last'
 };
 
+exports.Prisma.RoleOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  description: 'description'
+};
+
+exports.Prisma.PermissionOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  module: 'module',
+  description: 'description'
+};
+
+exports.Prisma.RolePermissionOrderByRelevanceFieldEnum = {
+  roleId: 'roleId',
+  permissionId: 'permissionId'
+};
+
+exports.Prisma.BranchOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  address: 'address',
+  phone: 'phone',
+  openingHours: 'openingHours',
+  managerId: 'managerId'
+};
+
+exports.Prisma.UserOrderByRelevanceFieldEnum = {
+  id: 'id',
+  username: 'username',
+  email: 'email',
+  passwordHash: 'passwordHash',
+  fullName: 'fullName',
+  phone: 'phone',
+  avatarUrl: 'avatarUrl',
+  roleId: 'roleId',
+  branchId: 'branchId',
+  passwordResetHash: 'passwordResetHash'
+};
+
+exports.Prisma.RefreshTokenOrderByRelevanceFieldEnum = {
+  id: 'id',
+  tokenHash: 'tokenHash',
+  userId: 'userId',
+  userAgent: 'userAgent',
+  ipAddress: 'ipAddress'
+};
+
+exports.Prisma.LoginHistoryOrderByRelevanceFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  ipAddress: 'ipAddress',
+  userAgent: 'userAgent',
+  reason: 'reason'
+};
+
+exports.Prisma.CategoryOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  description: 'description'
+};
+
+exports.Prisma.ProductOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  categoryId: 'categoryId',
+  description: 'description',
+  imageUrl: 'imageUrl'
+};
+
+exports.Prisma.ProductImageOrderByRelevanceFieldEnum = {
+  id: 'id',
+  productId: 'productId',
+  url: 'url',
+  publicId: 'publicId'
+};
+
+exports.Prisma.ProductVariantOrderByRelevanceFieldEnum = {
+  id: 'id',
+  productId: 'productId',
+  sku: 'sku',
+  name: 'name',
+  size: 'size',
+  cupType: 'cupType'
+};
+
+exports.Prisma.FlavorOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  color: 'color',
+  imageUrl: 'imageUrl'
+};
+
+exports.Prisma.FlavorIngredientOrderByRelevanceFieldEnum = {
+  flavorId: 'flavorId',
+  ingredientId: 'ingredientId'
+};
+
+exports.Prisma.ToppingOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  imageUrl: 'imageUrl'
+};
+
+exports.Prisma.IngredientOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  unit: 'unit',
+  supplierId: 'supplierId',
+  warehouseLocation: 'warehouseLocation'
+};
+
+exports.Prisma.ProductRecipeOrderByRelevanceFieldEnum = {
+  id: 'id',
+  productId: 'productId',
+  variantId: 'variantId',
+  flavorId: 'flavorId',
+  toppingId: 'toppingId',
+  ingredientId: 'ingredientId',
+  note: 'note'
+};
+
+exports.Prisma.InventoryOrderByRelevanceFieldEnum = {
+  id: 'id',
+  branchId: 'branchId',
+  ingredientId: 'ingredientId'
+};
+
+exports.Prisma.InventoryBatchOrderByRelevanceFieldEnum = {
+  id: 'id',
+  branchId: 'branchId',
+  ingredientId: 'ingredientId',
+  purchaseItemId: 'purchaseItemId',
+  batchNumber: 'batchNumber'
+};
+
+exports.Prisma.InventoryTransactionOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  fromBranchId: 'fromBranchId',
+  toBranchId: 'toBranchId',
+  ingredientId: 'ingredientId',
+  referenceType: 'referenceType',
+  referenceId: 'referenceId',
+  note: 'note',
+  createdById: 'createdById'
+};
+
+exports.Prisma.StockIssueOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  note: 'note'
+};
+
+exports.Prisma.StockIssueItemOrderByRelevanceFieldEnum = {
+  id: 'id',
+  stockIssueId: 'stockIssueId',
+  ingredientId: 'ingredientId'
+};
+
+exports.Prisma.StocktakeOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  note: 'note'
+};
+
+exports.Prisma.StocktakeItemOrderByRelevanceFieldEnum = {
+  id: 'id',
+  stocktakeId: 'stocktakeId',
+  ingredientId: 'ingredientId'
+};
+
+exports.Prisma.SupplierOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  contactPerson: 'contactPerson',
+  phone: 'phone',
+  email: 'email',
+  address: 'address'
+};
+
+exports.Prisma.PurchaseOrderOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  supplierId: 'supplierId',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  note: 'note'
+};
+
+exports.Prisma.PurchaseOrderItemOrderByRelevanceFieldEnum = {
+  id: 'id',
+  purchaseOrderId: 'purchaseOrderId',
+  ingredientId: 'ingredientId',
+  batchNumber: 'batchNumber'
+};
+
+exports.Prisma.MembershipLevelOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name'
+};
+
+exports.Prisma.CustomerOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  fullName: 'fullName',
+  phone: 'phone',
+  email: 'email',
+  address: 'address',
+  membershipLevelId: 'membershipLevelId'
+};
+
+exports.Prisma.MembershipPlanOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  description: 'description',
+  benefitVariantId: 'benefitVariantId'
+};
+
+exports.Prisma.MembershipPlanProductOrderByRelevanceFieldEnum = {
+  membershipPlanId: 'membershipPlanId',
+  productId: 'productId'
+};
+
+exports.Prisma.MembershipSubscriptionOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  customerId: 'customerId',
+  membershipPlanId: 'membershipPlanId',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  referenceCode: 'referenceCode',
+  note: 'note'
+};
+
+exports.Prisma.MembershipBenefitUsageOrderByRelevanceFieldEnum = {
+  id: 'id',
+  subscriptionId: 'subscriptionId',
+  orderId: 'orderId'
+};
+
+exports.Prisma.CustomerPointTransactionOrderByRelevanceFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  orderId: 'orderId',
+  description: 'description'
+};
+
+exports.Prisma.PromotionOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  name: 'name',
+  description: 'description'
+};
+
+exports.Prisma.PromotionProductOrderByRelevanceFieldEnum = {
+  promotionId: 'promotionId',
+  productId: 'productId'
+};
+
+exports.Prisma.PromotionCategoryOrderByRelevanceFieldEnum = {
+  promotionId: 'promotionId',
+  categoryId: 'categoryId'
+};
+
+exports.Prisma.PromotionUsageOrderByRelevanceFieldEnum = {
+  id: 'id',
+  promotionId: 'promotionId',
+  customerId: 'customerId',
+  orderId: 'orderId'
+};
+
+exports.Prisma.CustomerVoucherOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  customerId: 'customerId',
+  membershipLevelId: 'membershipLevelId',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  issuedFromOrderId: 'issuedFromOrderId',
+  usedOrderId: 'usedOrderId'
+};
+
+exports.Prisma.OrderOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  customerId: 'customerId',
+  createdById: 'createdById',
+  assignedToId: 'assignedToId',
+  shiftId: 'shiftId',
+  promotionId: 'promotionId',
+  note: 'note',
+  cancellationReason: 'cancellationReason'
+};
+
+exports.Prisma.OrderItemOrderByRelevanceFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  productId: 'productId',
+  variantId: 'variantId',
+  productName: 'productName',
+  variantName: 'variantName',
+  sku: 'sku',
+  note: 'note'
+};
+
+exports.Prisma.OrderItemFlavorOrderByRelevanceFieldEnum = {
+  id: 'id',
+  orderItemId: 'orderItemId',
+  flavorId: 'flavorId'
+};
+
+exports.Prisma.OrderItemToppingOrderByRelevanceFieldEnum = {
+  id: 'id',
+  orderItemId: 'orderItemId',
+  toppingId: 'toppingId'
+};
+
+exports.Prisma.PaymentOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  orderId: 'orderId',
+  referenceCode: 'referenceCode',
+  note: 'note'
+};
+
+exports.Prisma.RefundOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  orderId: 'orderId',
+  createdById: 'createdById',
+  reason: 'reason'
+};
+
+exports.Prisma.WorkShiftOrderByRelevanceFieldEnum = {
+  id: 'id',
+  code: 'code',
+  branchId: 'branchId',
+  userId: 'userId',
+  note: 'note'
+};
+
+exports.Prisma.ShiftExpenseOrderByRelevanceFieldEnum = {
+  id: 'id',
+  shiftId: 'shiftId',
+  createdById: 'createdById',
+  category: 'category',
+  description: 'description'
+};
+
+exports.Prisma.OrderStatusHistoryOrderByRelevanceFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  changedById: 'changedById',
+  note: 'note'
+};
+
 exports.Prisma.JsonNullValueFilter = {
   DbNull: Prisma.DbNull,
   JsonNull: Prisma.JsonNull,
@@ -657,6 +1160,16 @@ exports.Prisma.JsonNullValueFilter = {
 exports.Prisma.QueryMode = {
   default: 'default',
   insensitive: 'insensitive'
+};
+
+exports.Prisma.AuditLogOrderByRelevanceFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  action: 'action',
+  entityType: 'entityType',
+  entityId: 'entityId',
+  ipAddress: 'ipAddress',
+  userAgent: 'userAgent'
 };
 exports.AccountStatus = exports.$Enums.AccountStatus = {
   ACTIVE: 'ACTIVE',
@@ -688,11 +1201,38 @@ exports.InventoryTransactionType = exports.$Enums.InventoryTransactionType = {
   REFUND: 'REFUND'
 };
 
+exports.StockIssueReason = exports.$Enums.StockIssueReason = {
+  INTERNAL_USE: 'INTERNAL_USE',
+  DAMAGED: 'DAMAGED',
+  EXPIRED: 'EXPIRED',
+  SAMPLE: 'SAMPLE',
+  OTHER: 'OTHER'
+};
+
 exports.PurchaseOrderStatus = exports.$Enums.PurchaseOrderStatus = {
   DRAFT: 'DRAFT',
   PENDING: 'PENDING',
   APPROVED: 'APPROVED',
   RECEIVED: 'RECEIVED',
+  CANCELLED: 'CANCELLED'
+};
+
+exports.VoucherDiscountType = exports.$Enums.VoucherDiscountType = {
+  PERCENT: 'PERCENT',
+  FIXED_AMOUNT: 'FIXED_AMOUNT'
+};
+
+exports.PaymentMethod = exports.$Enums.PaymentMethod = {
+  CASH: 'CASH',
+  BANK_TRANSFER: 'BANK_TRANSFER',
+  CARD: 'CARD',
+  EWALLET: 'EWALLET',
+  MIXED: 'MIXED'
+};
+
+exports.MembershipSubscriptionStatus = exports.$Enums.MembershipSubscriptionStatus = {
+  ACTIVE: 'ACTIVE',
+  EXPIRED: 'EXPIRED',
   CANCELLED: 'CANCELLED'
 };
 
@@ -714,6 +1254,19 @@ exports.PromotionType = exports.$Enums.PromotionType = {
   HAPPY_HOUR: 'HAPPY_HOUR'
 };
 
+exports.VoucherIssueReason = exports.$Enums.VoucherIssueReason = {
+  TIER_UPGRADE: 'TIER_UPGRADE',
+  QUALIFYING_ORDER: 'QUALIFYING_ORDER',
+  MANUAL: 'MANUAL'
+};
+
+exports.VoucherStatus = exports.$Enums.VoucherStatus = {
+  ACTIVE: 'ACTIVE',
+  USED: 'USED',
+  EXPIRED: 'EXPIRED',
+  CANCELLED: 'CANCELLED'
+};
+
 exports.PaymentStatus = exports.$Enums.PaymentStatus = {
   UNPAID: 'UNPAID',
   PARTIALLY_PAID: 'PARTIALLY_PAID',
@@ -729,14 +1282,6 @@ exports.OrderStatus = exports.$Enums.OrderStatus = {
   READY: 'READY',
   COMPLETED: 'COMPLETED',
   CANCELLED: 'CANCELLED'
-};
-
-exports.PaymentMethod = exports.$Enums.PaymentMethod = {
-  CASH: 'CASH',
-  BANK_TRANSFER: 'BANK_TRANSFER',
-  CARD: 'CARD',
-  EWALLET: 'EWALLET',
-  MIXED: 'MIXED'
 };
 
 exports.RefundStatus = exports.$Enums.RefundStatus = {
@@ -770,16 +1315,25 @@ exports.Prisma.ModelName = {
   Inventory: 'Inventory',
   InventoryBatch: 'InventoryBatch',
   InventoryTransaction: 'InventoryTransaction',
+  StockIssue: 'StockIssue',
+  StockIssueItem: 'StockIssueItem',
+  Stocktake: 'Stocktake',
+  StocktakeItem: 'StocktakeItem',
   Supplier: 'Supplier',
   PurchaseOrder: 'PurchaseOrder',
   PurchaseOrderItem: 'PurchaseOrderItem',
   MembershipLevel: 'MembershipLevel',
   Customer: 'Customer',
+  MembershipPlan: 'MembershipPlan',
+  MembershipPlanProduct: 'MembershipPlanProduct',
+  MembershipSubscription: 'MembershipSubscription',
+  MembershipBenefitUsage: 'MembershipBenefitUsage',
   CustomerPointTransaction: 'CustomerPointTransaction',
   Promotion: 'Promotion',
   PromotionProduct: 'PromotionProduct',
   PromotionCategory: 'PromotionCategory',
   PromotionUsage: 'PromotionUsage',
+  CustomerVoucher: 'CustomerVoucher',
   Order: 'Order',
   OrderItem: 'OrderItem',
   OrderItemFlavor: 'OrderItemFlavor',

@@ -153,6 +153,12 @@ function dateDaysAgo(days, hour = 10) {
 async function clearDatabase() {
   const operations = [
     prisma.auditLog.deleteMany(),
+    prisma.membershipBenefitUsage.deleteMany(),
+    prisma.customerVoucher.deleteMany(),
+    prisma.stocktakeItem.deleteMany(),
+    prisma.stocktake.deleteMany(),
+    prisma.stockIssueItem.deleteMany(),
+    prisma.stockIssue.deleteMany(),
     prisma.orderStatusHistory.deleteMany(),
     prisma.shiftExpense.deleteMany(),
     prisma.refund.deleteMany(),
@@ -164,6 +170,7 @@ async function clearDatabase() {
     prisma.orderItem.deleteMany(),
     prisma.order.deleteMany(),
     prisma.workShift.deleteMany(),
+    prisma.membershipSubscription.deleteMany(),
     prisma.promotionProduct.deleteMany(),
     prisma.promotionCategory.deleteMany(),
     prisma.promotion.deleteMany(),
@@ -173,6 +180,7 @@ async function clearDatabase() {
     prisma.purchaseOrderItem.deleteMany(),
     prisma.purchaseOrder.deleteMany(),
     prisma.productRecipe.deleteMany(),
+    prisma.membershipPlanProduct.deleteMany(),
     prisma.flavorIngredient.deleteMany(),
     prisma.productImage.deleteMany(),
     prisma.productVariant.deleteMany(),
@@ -183,6 +191,7 @@ async function clearDatabase() {
     prisma.ingredient.deleteMany(),
     prisma.supplier.deleteMany(),
     prisma.customer.deleteMany(),
+    prisma.membershipPlan.deleteMany(),
     prisma.membershipLevel.deleteMany(),
     prisma.loginHistory.deleteMany(),
     prisma.refreshToken.deleteMany(),
@@ -505,12 +514,37 @@ async function main() {
     }
   }
 
+  const monthlyMembershipPlan = await prisma.membershipPlan.create({
+    data: {
+      code: "HOIVIEN30",
+      name: "Hội viên Kem Mỗi Ngày",
+      description: "Hiệu lực 30 ngày, mỗi ngày được miễn phí 1 sản phẩm kem đủ điều kiện.",
+      price: 399000,
+      durationDays: 30,
+      dailyFreeQuantity: 1,
+      benefitVariantId: variants[0].id,
+      products: {
+        create: [{ productId: products[0].id }],
+      },
+    },
+  });
+
   const memberships = [];
-  for (const [memberCode, name, minSpending, pointRate, birthdayDiscount, displayOrder] of [
-    ["NEW", "Thành viên mới", 0, 0.01, 5, 1],
-    ["SILVER", "Bạc", 1000000, 0.015, 10, 2],
-    ["GOLD", "Vàng", 5000000, 0.02, 15, 3],
-    ["DIAMOND", "Kim cương", 15000000, 0.03, 20, 4],
+  for (const [
+    memberCode,
+    name,
+    minSpending,
+    minPoints,
+    pointRate,
+    birthdayDiscount,
+    displayOrder,
+    voucherEnabled,
+    voucherValue,
+  ] of [
+    ["NEW", "Thành viên mới", 0, 0, 1, 5, 1, false, 0],
+    ["SILVER", "Bạc", 1000000, 100, 1.5, 10, 2, true, 30000],
+    ["GOLD", "Vàng", 5000000, 700, 2, 15, 3, true, 50000],
+    ["DIAMOND", "Kim cương", 15000000, 2700, 3, 20, 4, true, 100000],
   ]) {
     memberships.push(
       await prisma.membershipLevel.create({
@@ -518,9 +552,16 @@ async function main() {
           code: memberCode,
           name,
           minSpending,
+          minPoints,
           pointRate,
           birthdayDiscount,
           displayOrder,
+          voucherEnabled,
+          voucherType: "FIXED_AMOUNT",
+          voucherValue,
+          voucherValidityDays: 15,
+          voucherCooldownDays: 15,
+          voucherRenewalOrderMinAmount: 200000,
         },
       }),
     );
@@ -541,13 +582,28 @@ async function main() {
           membershipLevelId: memberships[levelIndex].id,
           totalSpending: memberships[levelIndex].minSpending + index * 50000,
           totalOrders: 1 + (index % 20),
-          points: 20 + index * 3,
+          points: memberships[levelIndex].minPoints + 20 + index * 3,
         },
       }),
     );
   }
 
   const now = new Date();
+  await prisma.membershipSubscription.create({
+    data: {
+      code: "HV-DEMO-001",
+      customerId: customers[0].id,
+      membershipPlanId: monthlyMembershipPlan.id,
+      branchId: branches[0].id,
+      createdById: users[2].id,
+      startsAt: new Date(now.getTime() - 2 * 86400000),
+      endsAt: new Date(now.getTime() + 28 * 86400000),
+      amountPaid: monthlyMembershipPlan.price,
+      paymentMethod: "CASH",
+      note: "Gói hội viên mẫu",
+    },
+  });
+
   const promo = await prisma.promotion.create({
     data: {
       code: "MUAHE10",
@@ -577,6 +633,22 @@ async function main() {
       endHour: 17,
       totalUsageLimit: 500,
       usagePerCustomer: 2,
+    },
+  });
+  await prisma.promotion.create({
+    data: {
+      code: "MUA3TANG1",
+      name: "Mua 3 tặng 1",
+      description: "Chọn 4 món kem bất kỳ, món có giá thấp nhất được miễn phí",
+      type: "BUY_X_GET_Y",
+      value: 0,
+      buyQuantity: 3,
+      getQuantity: 1,
+      startAt: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+      endAt: new Date(now.getFullYear() + 3, 11, 31, 23, 59, 59),
+      minOrderValue: 0,
+      totalUsageLimit: 5000,
+      usagePerCustomer: 50,
     },
   });
 

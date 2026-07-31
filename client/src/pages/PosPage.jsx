@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArchiveRestore,
@@ -8,6 +8,8 @@ import {
   CircleDollarSign,
   Clock3,
   CreditCard,
+  Crown,
+  Gift,
   IceCreamBowl,
   Minus,
   NotebookPen,
@@ -17,6 +19,7 @@ import {
   Save,
   Search,
   ShoppingCart,
+  Sparkles,
   Smartphone,
   Trash2,
   XCircle,
@@ -35,6 +38,7 @@ import ProductCustomizer from "../features/pos/ProductCustomizer";
 import CustomerPicker from "../features/pos/CustomerPicker";
 import { formatDate, formatMoney, paymentMethodLabels } from "../utils/format";
 import { Link } from "react-router-dom";
+import { useAuth } from "../store/AuthContext";
 
 const paymentIcons = {
   CASH: Banknote,
@@ -44,17 +48,18 @@ const paymentIcons = {
 };
 
 export default function PosPage() {
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [cart, setCart] = useState([]);
   const [editingLine, setEditingLine] = useState(null);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [giftVariantId, setGiftVariantId] = useState(null);
   const [customer, setCustomer] = useState(null);
   const [orderNote, setOrderNote] = useState("");
   const [promotionInput, setPromotionInput] = useState("");
   const [promotionCode, setPromotionCode] = useState("");
-  const [pointsToRedeem, setPointsToRedeem] = useState(0);
   const [deliveryFee, setDeliveryFee] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [customerPaid, setCustomerPaid] = useState(0);
@@ -91,6 +96,13 @@ export default function PosPage() {
     queryFn: () => api.get("/orders/drafts/mine").then((response) => response.data.data),
     enabled: draftsOpen,
   });
+  const promotionsQuery = useQuery({
+    queryKey: ["pos-promotions"],
+    queryFn: () =>
+      api
+        .get("/promotions", { params: { active: true, size: 20 } })
+        .then((response) => response.data.data),
+  });
 
   const orderInput = useMemo(
     () => ({
@@ -103,10 +115,9 @@ export default function PosPage() {
       })),
       customerId: customer?.id || null,
       promotionCode: promotionCode || null,
-      pointsToRedeem: Number(pointsToRedeem || 0),
       deliveryFee: Number(deliveryFee || 0),
     }),
-    [cart, customer, promotionCode, pointsToRedeem, deliveryFee],
+    [cart, customer, promotionCode, deliveryFee],
   );
 
   const quoteQuery = useQuery({
@@ -120,6 +131,9 @@ export default function PosPage() {
   const localTotal = cart.reduce((sum, line) => sum + line.displayUnitPrice * line.quantity, 0);
   const total = quote?.totalAmount ?? localTotal;
   const change = paymentMethod === "CASH" ? Math.max(0, Number(customerPaid || 0) - total) : 0;
+  const branchVouchers = (customer?.activeVouchers || []).filter(
+    (voucher) => voucher.branchId === user?.branch?.id,
+  );
 
   const saveOrderMutation = useMutation({
     mutationFn: (saveAsDraft) =>
@@ -129,7 +143,7 @@ export default function PosPage() {
         note: orderNote || null,
         saveAsDraft,
         customerPaid: saveAsDraft ? 0 : paymentMethod === "CASH" ? Number(customerPaid || 0) : total,
-        payments: saveAsDraft ? [] : [{ method: paymentMethod, amount: total }],
+        payments: saveAsDraft || total === 0 ? [] : [{ method: paymentMethod, amount: total }],
       }),
     onSuccess: (response, saveAsDraft) => {
       if (saveAsDraft) toast.success("Đã lưu đơn tạm");
@@ -141,6 +155,9 @@ export default function PosPage() {
       queryClient.invalidateQueries({ queryKey: ["my-drafts"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      queryClient.invalidateQueries({ queryKey: ["customer-search"] });
+      queryClient.invalidateQueries({ queryKey: ["customer"] });
     },
     onError: (error) => toast.error(apiMessage(error)),
   });
@@ -151,7 +168,6 @@ export default function PosPage() {
     setOrderNote("");
     setPromotionInput("");
     setPromotionCode("");
-    setPointsToRedeem(0);
     setDeliveryFee(0);
     setCustomerPaid(0);
     setRestoredDraftId(null);
@@ -172,6 +188,11 @@ export default function PosPage() {
   const removeLine = (cartId) => setCart((current) => current.filter((line) => line.cartId !== cartId));
   const applyPromotion = () => {
     setPromotionCode(promotionInput.trim().toUpperCase());
+  };
+  const selectPromotion = (promotion) => {
+    const nextCode = promotionCode === promotion.code ? "" : promotion.code;
+    setPromotionInput(nextCode);
+    setPromotionCode(nextCode);
   };
   const restoreDraft = (draft) => {
     setCart(
@@ -211,8 +232,24 @@ export default function PosPage() {
   const openEdit = (line) => {
     const product = productsQuery.data?.find((item) => item.id === line.productId);
     if (!product) return toast.error("Sản phẩm không còn trong danh sách bán");
+    setGiftVariantId(null);
     setEditingLine(line);
     setSelectedProduct(product);
+  };
+
+  const addMembershipGift = async () => {
+    const benefitVariant = quote?.activeMembership?.plan?.benefitVariant;
+    if (!benefitVariant) {
+      return toast.error("Gói hội viên chưa được cấu hình sản phẩm quà tặng");
+    }
+    try {
+      const response = await api.get(`/products/${benefitVariant.product.id}`);
+      setEditingLine(null);
+      setGiftVariantId(benefitVariant.id);
+      setSelectedProduct(response.data.data);
+    } catch (error) {
+      toast.error(apiMessage(error));
+    }
   };
 
   const customizeInitial = editingLine
@@ -268,7 +305,7 @@ export default function PosPage() {
         ) : productsQuery.data?.length ? (
           <div className="tw-grid tw-grid-cols-2 tw-gap-3.5 sm:tw-grid-cols-3 lg:tw-grid-cols-4 2xl:tw-grid-cols-5">
             {productsQuery.data.map((product) => (
-              <ProductCard key={product.id} product={product} onClick={(item) => { setEditingLine(null); setSelectedProduct(item); }} />
+              <ProductCard key={product.id} product={product} onClick={(item) => { setEditingLine(null); setGiftVariantId(null); setSelectedProduct(item); }} />
             ))}
           </div>
         ) : (
@@ -326,20 +363,103 @@ export default function PosPage() {
             </AccordionSummary>
             <AccordionDetails sx={{ px: 0, pt: 1 }}>
               <div className="tw-space-y-3">
-                <CustomerPicker customer={customer} onSelect={(value) => { setCustomer(value); setPointsToRedeem(0); }} />
+                <CustomerPicker
+                  customer={customer}
+                  branchId={user?.branch?.id}
+                  onSelect={(value) => {
+                    setCustomer(value);
+                    setPromotionCode("");
+                    setPromotionInput("");
+                  }}
+                />
+                {branchVouchers.length > 0 && (
+                  <div>
+                    <div className="tw-mb-2 tw-flex tw-items-center tw-gap-1.5 tw-text-[11px] tw-font-bold tw-uppercase tw-tracking-wide tw-text-slate-500">
+                      <Gift size={14} className="tw-text-mint-600" /> Voucher dùng tại {user?.branch?.name}
+                    </div>
+                    <div className="tw-space-y-2">
+                      {branchVouchers.map((voucher) => {
+                        const selected = promotionCode === voucher.code;
+                        return (
+                          <button
+                            key={voucher.id}
+                            type="button"
+                            onClick={() => {
+                              const nextCode = selected ? "" : voucher.code;
+                              setPromotionInput(nextCode);
+                              setPromotionCode(nextCode);
+                            }}
+                            className={`tw-flex tw-w-full tw-items-center tw-justify-between tw-gap-3 tw-rounded-xl tw-border tw-p-3 tw-text-left tw-transition ${
+                              selected
+                                ? "tw-border-mint-500 tw-bg-mint-50 dark:tw-bg-mint-500/10"
+                                : "tw-border-slate-200 hover:tw-border-mint-300 dark:tw-border-slate-700"
+                            }`}
+                          >
+                            <span>
+                              <strong className="tw-block tw-text-sm">{voucher.code}</strong>
+                              <span className="tw-text-[11px] tw-text-slate-500">
+                                {voucher.type === "PERCENT"
+                                  ? `Giảm ${voucher.value}%`
+                                  : `Giảm ${formatMoney(voucher.value)}`}{" "}
+                                · {voucher.branch.name} · Hạn {formatDate(voucher.expiresAt)}
+                              </span>
+                            </span>
+                            <span className="tw-rounded-full tw-bg-mint-100 tw-px-2.5 tw-py-1 tw-text-[10px] tw-font-black tw-text-mint-700 dark:tw-bg-mint-900/30">
+                              {selected ? "Đang dùng" : "Áp dụng"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {promotionsQuery.data?.some((promotion) => promotion.type === "BUY_X_GET_Y") && (
+                  <div>
+                    <div className="tw-mb-2 tw-flex tw-items-center tw-gap-1.5 tw-text-[11px] tw-font-bold tw-uppercase tw-tracking-wide tw-text-slate-500">
+                      <Sparkles size={14} className="tw-text-amber-500" /> Ưu đãi nhanh
+                    </div>
+                    <div className="tw-space-y-2">
+                      {promotionsQuery.data
+                        .filter((promotion) => promotion.type === "BUY_X_GET_Y")
+                        .map((promotion) => {
+                          const selected = promotionCode === promotion.code;
+                          return (
+                            <button
+                              key={promotion.id}
+                              type="button"
+                              onClick={() => selectPromotion(promotion)}
+                              className={`tw-flex tw-w-full tw-items-center tw-gap-3 tw-rounded-xl tw-border tw-p-3 tw-text-left tw-transition ${
+                                selected
+                                  ? "tw-border-amber-400 tw-bg-amber-50 tw-shadow-sm dark:tw-border-amber-600 dark:tw-bg-amber-500/10"
+                                  : "tw-border-slate-200 tw-bg-white hover:tw-border-amber-300 hover:tw-bg-amber-50/60 dark:tw-border-slate-700 dark:tw-bg-slate-900"
+                              }`}
+                            >
+                              <span className="tw-flex tw-h-9 tw-w-9 tw-shrink-0 tw-items-center tw-justify-center tw-rounded-lg tw-bg-amber-100 tw-text-amber-700 dark:tw-bg-amber-500/15 dark:tw-text-amber-300">
+                                <Gift size={18} />
+                              </span>
+                              <span className="tw-min-w-0 tw-flex-1">
+                                <strong className="tw-block tw-text-sm">{promotion.name}</strong>
+                                <span className="tw-block tw-truncate tw-text-[11px] tw-text-slate-500">
+                                  Mua {promotion.buyQuantity} tặng {promotion.getQuantity} · Mã {promotion.code}
+                                </span>
+                              </span>
+                              <span className={`tw-rounded-full tw-px-2.5 tw-py-1 tw-text-[10px] tw-font-black ${
+                                selected
+                                  ? "tw-bg-amber-500 tw-text-white"
+                                  : "tw-bg-slate-100 tw-text-slate-500 dark:tw-bg-slate-800"
+                              }`}>
+                                {selected ? "Đang dùng" : "Áp dụng"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
                 <div className="tw-flex tw-gap-2">
-                  <Input label="Mã giảm giá" value={promotionInput} onChange={(event) => setPromotionInput(event.target.value.toUpperCase())} />
+                  <Input label="Mã ưu đãi / voucher" value={promotionInput} onChange={(event) => setPromotionInput(event.target.value.toUpperCase())} />
                   <Button variant="outlined" onClick={applyPromotion} disabled={!promotionInput.trim()}>Áp dụng</Button>
                 </div>
-                {customer && (
-                  <Input
-                    label={`Dùng điểm (tối đa ${customer.points})`}
-                    type="number"
-                    value={pointsToRedeem}
-                    onChange={(event) => setPointsToRedeem(Math.min(customer.points, Math.max(0, Number(event.target.value))))}
-                    inputProps={{ min: 0, max: customer.points }}
-                  />
-                )}
                 <Input label="Phí giao hàng" type="number" value={deliveryFee} onChange={(event) => setDeliveryFee(Math.max(0, Number(event.target.value)))} />
                 <Input label="Ghi chú toàn đơn" multiline rows={2} value={orderNote} onChange={(event) => setOrderNote(event.target.value)} />
               </div>
@@ -351,9 +471,86 @@ export default function PosPage() {
               {apiMessage(quoteQuery.error)}
             </div>
           )}
+          {quote?.promotion && (
+            <div className="tw-mb-3 tw-flex tw-items-start tw-gap-2.5 tw-rounded-xl tw-border tw-border-emerald-200 tw-bg-emerald-50 tw-p-3 dark:tw-border-emerald-800 dark:tw-bg-emerald-900/20">
+              <Gift size={18} className="tw-mt-0.5 tw-shrink-0 tw-text-emerald-600" />
+              <div className="tw-min-w-0 tw-flex-1">
+                <strong className="tw-block tw-text-xs tw-text-emerald-800 dark:tw-text-emerald-200">
+                  Đã áp dụng {quote.promotion.name}
+                </strong>
+                <span className="tw-mt-0.5 tw-block tw-text-[11px] tw-text-emerald-700/80 dark:tw-text-emerald-300/80">
+                  {quote.promotion.type === "BUY_X_GET_Y"
+                    ? `Tặng ${quote.promotion.benefit?.freeQuantity || quote.promotion.getQuantity} món giá thấp nhất`
+                    : `Mã ${quote.promotion.code}`}{" "}
+                  · Giảm {formatMoney(quote.discountAmount)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPromotionCode("");
+                  setPromotionInput("");
+                }}
+                className="tw-border-0 tw-bg-transparent tw-p-0 tw-text-[11px] tw-font-bold tw-text-emerald-700 tw-underline"
+              >
+                Bỏ
+              </button>
+            </div>
+          )}
+          {quote?.voucher && (
+            <div className="tw-mb-3 tw-flex tw-items-start tw-gap-2.5 tw-rounded-xl tw-border tw-border-mint-200 tw-bg-mint-50 tw-p-3 dark:tw-border-mint-800 dark:tw-bg-mint-900/20">
+              <Gift size={18} className="tw-mt-0.5 tw-shrink-0 tw-text-mint-600" />
+              <div className="tw-min-w-0 tw-flex-1">
+                <strong className="tw-block tw-text-xs tw-text-mint-800 dark:tw-text-mint-200">
+                  Voucher {quote.voucher.code}
+                </strong>
+                <span className="tw-mt-0.5 tw-block tw-text-[11px] tw-text-mint-700/80 dark:tw-text-mint-300/80">
+                  {quote.voucher.branch.name} · Giảm {formatMoney(quote.voucherDiscount)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPromotionCode("");
+                  setPromotionInput("");
+                }}
+                className="tw-border-0 tw-bg-transparent tw-p-0 tw-text-[11px] tw-font-bold tw-text-mint-700 tw-underline"
+              >
+                Bỏ
+              </button>
+            </div>
+          )}
+          {quote?.activeMembership && quote?.membershipBenefit && (
+            <div className="tw-mb-3 tw-flex tw-items-start tw-gap-2.5 tw-rounded-xl tw-border tw-border-lavender-200 tw-bg-lavender-50 tw-p-3 dark:tw-border-lavender-800 dark:tw-bg-lavender-900/20">
+              <Crown size={18} className="tw-mt-0.5 tw-shrink-0 tw-text-lavender-500" />
+              <div className="tw-min-w-0 tw-flex-1">
+                <strong className="tw-block tw-text-xs tw-text-lavender-700 dark:tw-text-lavender-200">
+                  {quote.activeMembership.plan.name}
+                </strong>
+                <span className="tw-mt-0.5 tw-block tw-text-[11px] tw-text-slate-600 dark:tw-text-slate-300">
+                  {quote.membershipBenefit.usedToday
+                    ? "Khách đã sử dụng quyền lợi miễn phí hôm nay"
+                    : quote.membershipBenefit.available
+                      ? `Miễn phí ${quote.membershipBenefit.freeQuantity} ${quote.activeMembership.plan.benefitVariant?.product?.name || "món quà"} · Giảm ${formatMoney(quote.membershipDiscount)}`
+                      : `Tặng ${quote.activeMembership.plan.benefitVariant?.product?.name || "sản phẩm đã cấu hình"} — ${quote.activeMembership.plan.benefitVariant?.name || ""}`}
+                </span>
+                {!quote.membershipBenefit.usedToday && !quote.membershipBenefit.available && quote.activeMembership.plan.benefitVariant && (
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<Gift size={14} />}
+                    onClick={addMembershipGift}
+                    className="!tw-mt-1 !tw-p-0 !tw-text-[11px]"
+                  >
+                    Thêm quà vào đơn
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
           <div className="tw-space-y-2 tw-rounded-xl tw-bg-slate-50 tw-p-3 tw-text-xs dark:tw-bg-slate-800/70">
             <div className="tw-flex tw-justify-between"><span className="tw-text-slate-500">Tiền hàng</span><span>{formatMoney(quote?.originalAmount ?? localTotal)}</span></div>
-            <div className="tw-flex tw-justify-between"><span className="tw-text-slate-500">Giảm giá</span><span>-{formatMoney((quote?.discountAmount || 0) + (quote?.pointsDiscount || 0))}</span></div>
+            <div className="tw-flex tw-justify-between"><span className="tw-text-slate-500">Giảm giá</span><span>-{formatMoney((quote?.discountAmount || 0) + (quote?.voucherDiscount || 0) + (quote?.membershipDiscount || 0))}</span></div>
             <div className="tw-flex tw-justify-between"><span className="tw-text-slate-500">VAT {quote?.vatRate || 8}%</span><span>{formatMoney(quote?.taxAmount || 0)}</span></div>
             <div className="tw-flex tw-justify-between"><span className="tw-text-slate-500">Phí giao hàng</span><span>{formatMoney(quote?.deliveryFee || deliveryFee)}</span></div>
             <div className="tw-flex tw-items-end tw-justify-between tw-border-t tw-border-dashed tw-border-slate-300 tw-pt-3 dark:tw-border-slate-700">
@@ -403,7 +600,9 @@ export default function PosPage() {
         flavors={flavorsQuery.data || []}
         toppings={toppingsQuery.data || []}
         initial={customizeInitial}
-        onClose={() => { setSelectedProduct(null); setEditingLine(null); }}
+        presetVariantId={giftVariantId}
+        lockVariant={Boolean(giftVariantId)}
+        onClose={() => { setSelectedProduct(null); setEditingLine(null); setGiftVariantId(null); }}
         onSave={addOrUpdateLine}
       />
       <ConfirmDialog
@@ -447,8 +646,19 @@ export default function PosPage() {
         <div className="tw-flex tw-flex-col tw-items-center tw-py-5 tw-text-center">
           <CheckCircle2 size={58} className="tw-text-emerald-500" />
           <h3 className="tw-mb-1 tw-mt-4 tw-text-2xl tw-font-black">{completedOrder?.code}</h3>
-          <p className="tw-m-0 tw-text-slate-500">Đơn hàng đã lưu, kho và điểm khách hàng đã được cập nhật.</p>
+          <p className="tw-m-0 tw-text-slate-500">Đơn hàng đã lưu, kho và điểm xếp hạng đã được cập nhật.</p>
           <strong className="tw-mt-5 tw-text-3xl tw-text-mint-700">{formatMoney(completedOrder?.totalAmount)}</strong>
+          {completedOrder?.issuedVouchers?.map((voucher) => (
+            <div key={voucher.id} className="tw-mt-5 tw-w-full tw-rounded-2xl tw-border tw-border-amber-200 tw-bg-amber-50 tw-p-4 tw-text-left dark:tw-border-amber-800 dark:tw-bg-amber-900/20">
+              <div className="tw-flex tw-items-center tw-gap-2 tw-font-black tw-text-amber-800 dark:tw-text-amber-200">
+                <Gift size={18} /> Khách vừa nhận voucher hạng {voucher.membershipLevel.name}
+              </div>
+              <div className="tw-mt-2 tw-flex tw-items-end tw-justify-between tw-gap-3">
+                <strong className="tw-text-lg tw-tracking-wide">{voucher.code}</strong>
+                <span className="tw-text-xs tw-text-slate-500">{voucher.branch.name} · Hạn {formatDate(voucher.expiresAt)}</span>
+              </div>
+            </div>
+          ))}
         </div>
       </Modal>
     </div>

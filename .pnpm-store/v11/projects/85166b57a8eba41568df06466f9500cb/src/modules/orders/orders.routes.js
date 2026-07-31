@@ -5,13 +5,19 @@ import { prisma } from "../../config/prisma.js";
 import { authenticate, requirePermission } from "../../middlewares/auth.js";
 import { validate } from "../../middlewares/validate.js";
 import { calculateOrder } from "../../services/order-pricing.service.js";
-import { deductInventory, updateCustomerAfterCompletion } from "../../services/inventory.service.js";
+import { deductInventory } from "../../services/inventory.service.js";
+import {
+  consumeCustomerVoucher,
+  updateCustomerAfterCompletion,
+} from "../../services/loyalty.service.js";
+import { renderInvoicePdf } from "../../services/invoice-pdf.service.js";
 import { emitOrderEvent } from "../../services/socket.service.js";
 import { ApiError } from "../../utils/api-error.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { createBusinessCode } from "../../utils/code.js";
 import { getPagination, paginationMeta } from "../../utils/pagination.js";
 import { created, success } from "../../utils/response.js";
+import { benefitDateFor, publicMembership } from "../../services/membership.service.js";
 
 const router = Router();
 router.use(authenticate);
@@ -26,6 +32,7 @@ const lineSchema = z.object({
 
 const quoteSchema = z.object({
   items: z.array(lineSchema).min(1),
+  branchId: z.string().optional().nullable(),
   customerId: z.string().optional().nullable(),
   promotionCode: z.string().trim().max(30).optional().nullable(),
   pointsToRedeem: z.coerce.number().int().min(0).default(0),
@@ -34,7 +41,6 @@ const quoteSchema = z.object({
 
 const createSchema = quoteSchema.extend({
   draftId: z.string().optional().nullable(),
-  branchId: z.string().optional().nullable(),
   note: z.string().trim().max(1000).optional().nullable(),
   saveAsDraft: z.boolean().default(false),
   customerPaid: z.coerce.number().int().min(0).default(0),
@@ -55,6 +61,20 @@ const orderInclude = {
   createdBy: { select: { id: true, fullName: true, username: true } },
   assignedTo: { select: { id: true, fullName: true } },
   promotion: { select: { id: true, code: true, name: true } },
+  usedVoucher: {
+    include: {
+      membershipLevel: { select: { id: true, code: true, name: true } },
+      branch: { select: { id: true, code: true, name: true } },
+      createdBy: { select: { id: true, fullName: true } },
+    },
+  },
+  issuedVouchers: {
+    include: {
+      membershipLevel: { select: { id: true, code: true, name: true } },
+      branch: { select: { id: true, code: true, name: true } },
+      createdBy: { select: { id: true, fullName: true } },
+    },
+  },
   items: {
     include: {
       product: { select: { id: true, code: true, name: true, imageUrl: true } },
@@ -81,7 +101,9 @@ function orderDataFromPricing(request, pricing, branchId, shiftId, code, status)
     promotionId: pricing.promotion?.id || null,
     originalAmount: pricing.originalAmount,
     discountAmount: pricing.discountAmount,
+    voucherDiscount: pricing.voucherDiscount,
     pointsDiscount: pricing.pointsDiscount,
+    membershipDiscount: pricing.membershipDiscount,
     vatRate: pricing.vatRate,
     taxAmount: pricing.taxAmount,
     deliveryFee: pricing.deliveryFee,
@@ -96,12 +118,26 @@ function orderDataFromPricing(request, pricing, branchId, shiftId, code, status)
   };
 }
 
+function resolveOrderBranchId(request) {
+  if (request.user.role.code === "ADMIN" && request.body.branchId) {
+    return request.body.branchId;
+  }
+  return request.user.branch?.id;
+}
+
 router.post(
   "/quote",
   requirePermission("pos.use"),
   validate(quoteSchema),
   asyncHandler(async (request, response) => {
-    const pricing = await calculateOrder(prisma, request.body);
+    const branchId = resolveOrderBranchId(request);
+    if (!branchId) {
+      throw new ApiError(422, "Tài khoản chưa được gán chi nhánh");
+    }
+    const pricing = await calculateOrder(prisma, {
+      ...request.body,
+      branchId,
+    });
     return success(response, {
       ...pricing,
       customer: pricing.customer
@@ -111,11 +147,34 @@ router.post(
             phone: pricing.customer.phone,
             points: pricing.customer.points,
             membershipLevel: pricing.customer.membershipLevel,
+            activeMembership: publicMembership(pricing.activeMembership),
           }
         : null,
       promotion: pricing.promotion
-        ? { id: pricing.promotion.id, code: pricing.promotion.code, name: pricing.promotion.name }
+        ? {
+            id: pricing.promotion.id,
+            code: pricing.promotion.code,
+            name: pricing.promotion.name,
+            type: pricing.promotion.type,
+            buyQuantity: pricing.promotion.buyQuantity,
+            getQuantity: pricing.promotion.getQuantity,
+            benefit: pricing.promotionBenefit,
+          }
         : null,
+      voucher: pricing.voucher
+        ? {
+            id: pricing.voucher.id,
+            code: pricing.voucher.code,
+            branchId: pricing.voucher.branchId,
+            type: pricing.voucher.type,
+            value: pricing.voucher.value,
+            expiresAt: pricing.voucher.expiresAt,
+            membershipLevel: pricing.voucher.membershipLevel,
+            branch: pricing.voucher.branch,
+          }
+        : null,
+      activeMembership: publicMembership(pricing.activeMembership),
+      membershipBenefit: pricing.membershipBenefit,
     }, "Tính giá đơn hàng thành công");
   }),
 );
@@ -198,10 +257,7 @@ router.post(
   requirePermission("pos.use"),
   validate(createSchema),
   asyncHandler(async (request, response) => {
-    const branchId =
-      ["ADMIN", "MANAGER"].includes(request.user.role.code) && request.body.branchId
-        ? request.body.branchId
-        : request.user.branch?.id;
+    const branchId = resolveOrderBranchId(request);
     if (!branchId) throw new ApiError(422, "Tài khoản chưa được gán chi nhánh");
 
     const restoredDraft = request.body.draftId
@@ -224,7 +280,10 @@ router.post(
     });
     if (!shift) throw new ApiError(422, "Bạn cần mở ca làm việc trước khi tạo đơn");
 
-    const pricing = await calculateOrder(prisma, request.body);
+    const pricing = await calculateOrder(prisma, {
+      ...request.body,
+      branchId,
+    });
     const status = request.body.saveAsDraft ? "DRAFT" : "COMPLETED";
     if (!request.body.saveAsDraft) {
       const paymentTotal = request.body.payments.reduce((sum, payment) => sum + payment.amount, 0);
@@ -241,11 +300,27 @@ router.post(
       if (restoredDraft) {
         await tx.order.delete({ where: { id: restoredDraft.id } });
       }
+      const currentPricing = await calculateOrder(tx, {
+        ...request.body,
+        branchId,
+      });
+      if (!request.body.saveAsDraft) {
+        const paymentTotal = request.body.payments.reduce(
+          (sum, payment) => sum + payment.amount,
+          0,
+        );
+        if (paymentTotal !== currentPricing.totalAmount) {
+          throw new ApiError(
+            409,
+            "Quyền lợi hoặc giá đơn vừa thay đổi; vui lòng kiểm tra lại tổng thanh toán",
+          );
+        }
+      }
       const createdOrder = await tx.order.create({
         data: {
-          ...orderDataFromPricing(request, pricing, branchId, shift.id, code, status),
+          ...orderDataFromPricing(request, currentPricing, branchId, shift.id, code, status),
           items: {
-            create: pricing.lines.map((line) => ({
+            create: currentPricing.lines.map((line) => ({
               productId: line.productId,
               variantId: line.variantId,
               productName: line.productName,
@@ -291,15 +366,36 @@ router.post(
       });
 
       if (!request.body.saveAsDraft) {
-        await deductInventory(tx, branchId, pricing.lines, request.user.id, createdOrder.id);
-        await updateCustomerAfterCompletion(tx, createdOrder, pricing);
-        if (pricing.promotion) {
+        await consumeCustomerVoucher(
+          tx,
+          currentPricing.voucher,
+          createdOrder.id,
+          branchId,
+        );
+        await deductInventory(tx, branchId, currentPricing.lines, request.user.id, createdOrder.id);
+        await updateCustomerAfterCompletion(tx, createdOrder);
+        if (currentPricing.promotion) {
           await tx.promotionUsage.create({
             data: {
-              promotionId: pricing.promotion.id,
+              promotionId: currentPricing.promotion.id,
               customerId: request.body.customerId || null,
               orderId: createdOrder.id,
-              discount: pricing.discountAmount,
+              discount: currentPricing.discountAmount,
+            },
+          });
+        }
+        if (
+          currentPricing.activeMembership &&
+          currentPricing.membershipBenefit?.available &&
+          currentPricing.membershipDiscount > 0
+        ) {
+          await tx.membershipBenefitUsage.create({
+            data: {
+              subscriptionId: currentPricing.activeMembership.id,
+              orderId: createdOrder.id,
+              benefitDate: benefitDateFor(),
+              quantity: currentPricing.membershipBenefit.freeQuantity,
+              discountAmount: currentPricing.membershipDiscount,
             },
           });
         }
@@ -322,7 +418,7 @@ router.post(
           action: request.body.saveAsDraft ? "ORDER_DRAFT_CREATE" : "ORDER_CHECKOUT",
           entityType: "Order",
           entityId: createdOrder.id,
-          newData: { code, totalAmount: pricing.totalAmount, status },
+          newData: { code, totalAmount: currentPricing.totalAmount, status },
           ipAddress: request.ip,
           userAgent: request.get("user-agent"),
         },
@@ -378,18 +474,7 @@ router.patch(
           toppings: item.toppings.map((itemTopping) => ({ id: itemTopping.toppingId, quantity: itemTopping.quantity })),
         }));
         await deductInventory(tx, existing.branchId, lines, request.user.id, existing.id);
-        const customer = existing.customerId
-          ? await tx.customer.findUnique({
-              where: { id: existing.customerId },
-              include: { membershipLevel: true },
-            })
-          : null;
-        await updateCustomerAfterCompletion(tx, existing, {
-          customer,
-          pointsToRedeem: existing.pointsDiscount && customer
-            ? Math.floor(existing.pointsDiscount / customer.membershipLevel.pointValue)
-            : 0,
-        });
+        await updateCustomerAfterCompletion(tx, existing);
       }
       await tx.order.update({
         where: { id: existing.id },
@@ -473,32 +558,14 @@ router.get(
     if (!order) throw new ApiError(404, "Không tìm thấy đơn hàng");
     response.setHeader("Content-Type", "application/pdf");
     response.setHeader("Content-Disposition", `inline; filename="${order.code}.pdf"`);
-    const document = new PDFDocument({ size: "A5", margin: 36 });
+    const document = new PDFDocument({
+      size: "A5",
+      margin: 24,
+      bufferPages: true,
+      autoFirstPage: true,
+    });
     document.pipe(response);
-    document.fontSize(20).text("IceCream POS", { align: "center" });
-    document.fontSize(10).text(order.branch.name, { align: "center" });
-    document.text(order.branch.address, { align: "center" });
-    document.moveDown();
-    document.fontSize(12).text(`Hoa don: ${order.code}`);
-    document.fontSize(9).text(`Ngay: ${order.createdAt.toLocaleString("vi-VN")}`);
-    document.text(`Thu ngan: ${order.createdBy.fullName}`);
-    if (order.customer) document.text(`Khach hang: ${order.customer.fullName} - ${order.customer.phone}`);
-    document.moveDown();
-    for (const item of order.items) {
-      document.fontSize(10).text(`${item.productName} (${item.variantName || ""}) x${item.quantity}`);
-      const additions = [
-        ...item.flavors.map((value) => value.flavor.name),
-        ...item.toppings.map((value) => value.topping.name),
-      ];
-      if (additions.length) document.fontSize(8).fillColor("#666").text(additions.join(", ")).fillColor("#000");
-      document.fontSize(10).text(`${item.lineTotal.toLocaleString("vi-VN")} VND`, { align: "right" });
-    }
-    document.moveDown().fontSize(10);
-    document.text(`Tam tinh: ${order.originalAmount.toLocaleString("vi-VN")} VND`, { align: "right" });
-    document.text(`Giam gia: ${order.discountAmount.toLocaleString("vi-VN")} VND`, { align: "right" });
-    document.text(`VAT: ${order.taxAmount.toLocaleString("vi-VN")} VND`, { align: "right" });
-    document.fontSize(13).text(`Tong cong: ${order.totalAmount.toLocaleString("vi-VN")} VND`, { align: "right" });
-    document.moveDown().fontSize(9).text("Cam on quy khach va hen gap lai!", { align: "center" });
+    renderInvoicePdf(document, order);
     document.end();
   }),
 );

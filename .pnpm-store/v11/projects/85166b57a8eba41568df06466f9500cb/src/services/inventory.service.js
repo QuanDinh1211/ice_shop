@@ -1,5 +1,5 @@
 import { ApiError } from "../utils/api-error.js";
-import { createBusinessCode } from "../utils/code.js";
+import { consumeInventoryBatches } from "./inventory-batch.service.js";
 
 function addNeed(map, ingredientId, quantity) {
   map.set(ingredientId, (map.get(ingredientId) || 0) + quantity);
@@ -50,7 +50,7 @@ export async function collectRecipeNeeds(tx, lines) {
 export async function deductInventory(tx, branchId, lines, userId, orderId) {
   const { needs, recipes } = await collectRecipeNeeds(tx, lines);
   const ingredientInfo = new Map(recipes.map((recipe) => [recipe.ingredientId, recipe.ingredient]));
-  for (const [ingredientId, required] of needs.entries()) {
+  for (const [transactionIndex, [ingredientId, required]] of [...needs.entries()].entries()) {
     const inventory = await tx.inventory.findUnique({
       where: { branchId_ingredientId: { branchId, ingredientId } },
     });
@@ -66,14 +66,21 @@ export async function deductInventory(tx, branchId, lines, userId, orderId) {
       where: { id: inventory.id },
       data: { quantity: { decrement: required } },
     });
+    const batchCost = await consumeInventoryBatches(tx, {
+      branchId,
+      ingredientId,
+      quantity: required,
+      ingredientName: ingredient?.name,
+    });
     await tx.inventoryTransaction.create({
       data: {
-        code: createBusinessCode("KHO"),
+        code: `SALE-${orderId}-${String(transactionIndex + 1).padStart(3, "0")}`,
         type: "SALE",
         branchId,
         ingredientId,
         quantity: -required,
         balanceAfter: updated.quantity,
+        unitCost: batchCost.unitCost,
         referenceType: "Order",
         referenceId: orderId,
         note: "Xuất kho tự động khi hoàn thành đơn",
@@ -81,75 +88,5 @@ export async function deductInventory(tx, branchId, lines, userId, orderId) {
       },
     });
 
-    let remainingToDeduct = required;
-    const batches = await tx.inventoryBatch.findMany({
-      where: { branchId, ingredientId, remaining: { gt: 0 } },
-      orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }],
-    });
-    for (const batch of batches) {
-      if (remainingToDeduct <= 0) break;
-      const amount = Math.min(batch.remaining, remainingToDeduct);
-      await tx.inventoryBatch.update({
-        where: { id: batch.id },
-        data: { remaining: { decrement: amount } },
-      });
-      remainingToDeduct -= amount;
-    }
-    if (remainingToDeduct > 0.0001) {
-      throw new ApiError(422, `Dữ liệu lô của ${ingredient?.name || "nguyên liệu"} không đủ`);
-    }
   }
 }
-
-export async function updateCustomerAfterCompletion(tx, order, pricing) {
-  if (!order.customerId || !pricing.customer) return;
-  const customer = pricing.customer;
-  const currentPoints = customer.points;
-  const pointsToRedeem = pricing.pointsToRedeem || 0;
-  const pointRate = customer.membershipLevel.pointRate;
-  const earnedPoints = Math.max(0, Math.floor((order.totalAmount / 10000) * pointRate * 100));
-  let balance = currentPoints;
-
-  if (pointsToRedeem > 0) {
-    balance -= pointsToRedeem;
-    await tx.customerPointTransaction.create({
-      data: {
-        customerId: customer.id,
-        orderId: order.id,
-        type: "REDEEM",
-        points: -pointsToRedeem,
-        balanceAfter: balance,
-        description: `Dùng điểm cho đơn ${order.code}`,
-      },
-    });
-  }
-  if (earnedPoints > 0) {
-    balance += earnedPoints;
-    await tx.customerPointTransaction.create({
-      data: {
-        customerId: customer.id,
-        orderId: order.id,
-        type: "EARN",
-        points: earnedPoints,
-        balanceAfter: balance,
-        description: `Tích điểm từ đơn ${order.code}`,
-      },
-    });
-  }
-
-  const totalSpending = customer.totalSpending + order.totalAmount;
-  const membership = await tx.membershipLevel.findFirst({
-    where: { minSpending: { lte: totalSpending } },
-    orderBy: { minSpending: "desc" },
-  });
-  await tx.customer.update({
-    where: { id: customer.id },
-    data: {
-      totalSpending,
-      totalOrders: { increment: 1 },
-      points: balance,
-      membershipLevelId: membership.id,
-    },
-  });
-}
-
