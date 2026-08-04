@@ -322,6 +322,8 @@ exports.Prisma.InventoryScalarFieldEnum = {
   ingredientId: 'ingredientId',
   quantity: 'quantity',
   reserved: 'reserved',
+  lastCost: 'lastCost',
+  averageCost: 'averageCost',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };
@@ -736,6 +738,18 @@ exports.Prisma.ShiftExpenseScalarFieldEnum = {
   category: 'category',
   amount: 'amount',
   description: 'description',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ExpenseScalarFieldEnum = {
+  id: 'id',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  category: 'category',
+  amount: 'amount',
+  description: 'description',
+  incurredAt: 'incurredAt',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };
@@ -1156,6 +1170,13 @@ exports.Prisma.ShiftExpenseOrderByRelevanceFieldEnum = {
   description: 'description'
 };
 
+exports.Prisma.ExpenseOrderByRelevanceFieldEnum = {
+  id: 'id',
+  branchId: 'branchId',
+  createdById: 'createdById',
+  description: 'description'
+};
+
 exports.Prisma.OrderStatusHistoryOrderByRelevanceFieldEnum = {
   id: 'id',
   orderId: 'orderId',
@@ -1314,6 +1335,21 @@ exports.ShiftStatus = exports.$Enums.ShiftStatus = {
   CLOSED: 'CLOSED'
 };
 
+exports.ExpenseCategory = exports.$Enums.ExpenseCategory = {
+  COGS: 'COGS',
+  PERSONNEL: 'PERSONNEL',
+  RENT: 'RENT',
+  UTILITIES: 'UTILITIES',
+  MARKETING: 'MARKETING',
+  OPERATIONS: 'OPERATIONS',
+  SHRINKAGE: 'SHRINKAGE',
+  MAINTENANCE: 'MAINTENANCE',
+  FINANCE: 'FINANCE',
+  TAX: 'TAX',
+  DEPRECIATION: 'DEPRECIATION',
+  OTHER: 'OTHER'
+};
+
 exports.Prisma.ModelName = {
   Role: 'Role',
   Permission: 'Permission',
@@ -1361,6 +1397,7 @@ exports.Prisma.ModelName = {
   Refund: 'Refund',
   WorkShift: 'WorkShift',
   ShiftExpense: 'ShiftExpense',
+  Expense: 'Expense',
   OrderStatusHistory: 'OrderStatusHistory',
   PaymentStatusHistory: 'PaymentStatusHistory',
   AuditLog: 'AuditLog'
