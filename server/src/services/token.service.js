@@ -33,7 +33,6 @@ export function randomToken() {
 }
 
 export function refreshCookieOptions() {
-  console.log("env.REFRESH_TOKEN_EXPIRES_DAYS", env.REFRESH_TOKEN_EXPIRES_DAYS);
   return {
     httpOnly: true,
     secure: env.COOKIE_SECURE,
